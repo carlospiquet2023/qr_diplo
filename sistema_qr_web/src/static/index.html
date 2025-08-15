@@ -159,11 +159,27 @@
         }
 
         .pdf-image {
-            max-width: 100%;
-            max-height: 500px;
             border-radius: 8px;
             box-shadow: 0 10px 30px rgba(0,0,0,0.1);
             cursor: crosshair;
+            transition: all 0.3s ease;
+        }
+
+        .pdf-image.fit-screen {
+            max-width: 100%;
+            max-height: 500px;
+        }
+
+        .pdf-image.real-size {
+            width: auto;
+            height: auto;
+            max-width: none;
+            max-height: none;
+        }
+
+        .pdf-canvas-container.real-size {
+            overflow: auto;
+            max-height: 600px;
         }
 
         .navigation {
@@ -461,6 +477,23 @@
                 </div>
 
                 <div class="sidebar-section">
+                    <h4>Modo de Visualização</h4>
+                    <div class="qr-controls">
+                        <label style="display: flex; align-items: center; margin-bottom: 10px;">
+                            <input type="radio" name="viewMode" value="fit" checked onchange="changeViewMode()" style="margin-right: 8px;"> 
+                            📱 Ajustar à Tela
+                        </label>
+                        <label style="display: flex; align-items: center; margin-bottom: 10px;">
+                            <input type="radio" name="viewMode" value="real" onchange="changeViewMode()" style="margin-right: 8px;"> 
+                            🔍 Tamanho Real (100%)
+                        </label>
+                        <div style="margin: 10px 0; padding: 10px; background: #fff3cd; border-radius: 8px; font-size: 12px;">
+                            <strong>⚠️ Importante:</strong> Use "Tamanho Real" para posicionamento preciso do QR Code.
+                        </div>
+                    </div>
+                </div>
+
+                <div class="sidebar-section">
                     <h4>Controles QR</h4>
                     <div class="qr-controls">
                         <div id="qrPreview" style="display: none; margin-bottom: 15px;">
@@ -529,7 +562,8 @@
         </div>
     </div>
 
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+    <script src="app_new_functions.js"></script>
     <script src="app.js"></script>
 </body>
 </html>
-

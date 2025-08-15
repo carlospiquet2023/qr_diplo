@@ -8,7 +8,8 @@ let appState = {
     qrPositions: [],
     batchPdfs: [],
     batchQrs: [],
-    extractedQrs: []
+    extractedQrs: [],
+    viewMode: 'fit' // 'fit' ou 'real'
 };
 
 // Configuração da API
@@ -62,33 +63,56 @@ function handleCanvasClick(e) {
     }
 
     const rect = e.currentTarget.getBoundingClientRect();
-    const x = e.clientX - rect.left;
-    const y = e.clientY - rect.top;
+    const clickX = e.clientX - rect.left;
+    const clickY = e.clientY - rect.top;
     
-    const qrSize = parseInt(document.getElementById('qrSizeSlider').value);
-    const canvasWidth = rect.width;
-    const canvasHeight = rect.height;
-    const minSide = Math.min(canvasWidth, canvasHeight);
-    const qrPixelSize = (qrSize / 100) * minSide;
+    const pdfImage = e.currentTarget.querySelector('.pdf-image');
+    if (!pdfImage) return;
     
-        // Ajusta para garantir que o QR fique dentro da área do diploma (imagem renderizada)
-        // Supondo que a imagem é centralizada e tem margens laterais
-        const diplomaMarginX = canvasWidth * 0.07; // 7% de margem lateral
-        const diplomaMarginY = canvasHeight * 0.07; // 7% de margem vertical
-        const diplomaWidth = canvasWidth - 2 * diplomaMarginX;
-        const diplomaHeight = canvasHeight - 2 * diplomaMarginY;
-
-        // Limites válidos para o centro do QR
-        const minX = diplomaMarginX + qrPixelSize / 2;
-        const maxX = diplomaMarginX + diplomaWidth - qrPixelSize / 2;
-        const minY = diplomaMarginY + qrPixelSize / 2;
-        const maxY = diplomaMarginY + diplomaHeight - qrPixelSize / 2;
-
-        // Ajusta a posição para ficar dentro do diploma
-        const qrCenterX = Math.max(minX, Math.min(x, maxX));
-        const qrCenterY = Math.max(minY, Math.min(y, maxY));
-        const qrX = qrCenterX - qrPixelSize / 2;
-        const qrY = qrCenterY - qrPixelSize / 2;
+    const imageRect = pdfImage.getBoundingClientRect();
+    const canvasRect = rect;
+    
+    // Coordenadas relativas à imagem
+    const relativeX = clickX - (imageRect.left - canvasRect.left);
+    const relativeY = clickY - (imageRect.top - canvasRect.top);
+    
+    // Verifica se o clique foi dentro da imagem
+    if (relativeX < 0 || relativeY < 0 || relativeX > imageRect.width || relativeY > imageRect.height) {
+        return; // Clique fora da imagem
+    }
+    
+    // Obtém as dimensões reais do PDF
+    const realDimensions = getRealPdfDimensions();
+    if (!realDimensions) return;
+    
+    // Calcula a escala da imagem exibida vs. tamanho real
+    let scaleX, scaleY;
+    if (appState.viewMode === 'real') {
+        // No modo real, assumimos que a imagem está em 1:1
+        scaleX = realDimensions.width / imageRect.width;
+        scaleY = realDimensions.height / imageRect.height;
+    } else {
+        // No modo fit, calculamos com base no tamanho real
+        scaleX = realDimensions.width / imageRect.width;
+        scaleY = realDimensions.height / imageRect.height;
+    }
+    
+    // Converte para coordenadas reais do PDF
+    const realX = relativeX * scaleX;
+    const realY = relativeY * scaleY;
+    
+    // Calcula o tamanho do QR em coordenadas reais
+    const qrSizePercent = parseInt(document.getElementById('qrSizeSlider').value);
+    const minSideReal = Math.min(realDimensions.width, realDimensions.height);
+    const qrRealSize = (qrSizePercent / 100) * minSideReal;
+    
+    // Ajusta posição para centralizar o QR no clique
+    const qrRealX = realX - qrRealSize / 2;
+    const qrRealY = realY - qrRealSize / 2;
+    
+    // Garante que o QR fique dentro dos limites do PDF
+    const finalX = Math.max(0, Math.min(qrRealX, realDimensions.width - qrRealSize));
+    const finalY = Math.max(0, Math.min(qrRealY, realDimensions.height - qrRealSize));
     
     // Remove QR anterior desta página
     if (!appState.qrPositions[appState.currentPage]) {
@@ -96,19 +120,23 @@ function handleCanvasClick(e) {
     }
     appState.qrPositions[appState.currentPage] = [];
     
-    // Adiciona novo QR
+    // Adiciona novo QR com coordenadas reais
     appState.qrPositions[appState.currentPage].push({
-        x: qrX,
-        y: qrY,
-        size: qrPixelSize,
-        percent: qrSize,
-        canvas_width: canvasWidth,
-        canvas_height: canvasHeight
+        x: finalX,
+        y: finalY,
+        size: qrRealSize,
+        percent: qrSizePercent,
+        canvas_width: imageRect.width,
+        canvas_height: imageRect.height,
+        real_width: realDimensions.width,
+        real_height: realDimensions.height,
+        scale_x: scaleX,
+        scale_y: scaleY
     });
     
     drawQrOverlays();
     updateSaveButtons();
-    log(`QR Code posicionado na página ${appState.currentPage + 1} em (${Math.round(qrX)}, ${Math.round(qrY)})`);
+    log(`QR Code posicionado na página ${appState.currentPage + 1} em coordenadas reais (${Math.round(finalX)}, ${Math.round(finalY)})`);
 }
 
 async function loadPdfs(files) {
@@ -260,14 +288,22 @@ function renderCurrentPage() {
     const pdfCanvas = document.getElementById('pdfCanvas');
     const page = appState.pages[appState.currentPage];
     
+    const viewModeClass = appState.viewMode === 'real' ? 'real-size' : 'fit-screen';
+    
     pdfCanvas.innerHTML = `
-        <img src="${page.image}" 
-             class="pdf-image" 
-             alt="Página ${appState.currentPage + 1}"
-             style="position: relative;">
+        <div style="position: relative; display: inline-block;">
+            <img src="${page.image}" 
+                 class="pdf-image ${viewModeClass}" 
+                 alt="Página ${appState.currentPage + 1}">
+        </div>
     `;
     
     pdfCanvas.classList.add('has-pdf');
+    if (appState.viewMode === 'real') {
+        pdfCanvas.classList.add('real-size');
+    } else {
+        pdfCanvas.classList.remove('real-size');
+    }
     
     // Aguarda a imagem carregar para desenhar overlays
     const img = pdfCanvas.querySelector('.pdf-image');
@@ -283,21 +319,41 @@ function drawQrOverlays() {
     if (!appState.qrPositions[appState.currentPage] || !appState.qrImage) return;
     
     const pdfCanvas = document.getElementById('pdfCanvas');
+    const pdfImage = pdfCanvas.querySelector('.pdf-image');
+    const imageContainer = pdfImage ? pdfImage.parentElement : null;
     const pageQrs = appState.qrPositions[appState.currentPage];
     
+    if (!pdfImage || !imageContainer) return;
+    
+    const imageRect = pdfImage.getBoundingClientRect();
+    
+    // Obtém as dimensões reais do PDF
+    const realDimensions = getRealPdfDimensions();
+    if (!realDimensions) return;
+    
     pageQrs.forEach((qr, index) => {
+        // Converte coordenadas reais para coordenadas da imagem exibida
+        const scaleX = imageRect.width / realDimensions.width;
+        const scaleY = imageRect.height / realDimensions.height;
+        
+        const displayX = qr.x * scaleX;
+        const displayY = qr.y * scaleY;
+        const displaySize = qr.size * Math.min(scaleX, scaleY);
+        
         const overlay = document.createElement('div');
         overlay.className = 'qr-overlay';
-        overlay.style.left = Math.max(0, qr.x) + 'px';
-        overlay.style.top = Math.max(0, qr.y) + 'px';
-        overlay.style.width = qr.size + 'px';
-        overlay.style.height = qr.size + 'px';
+        overlay.style.position = 'absolute';
+        overlay.style.left = displayX + 'px';
+        overlay.style.top = displayY + 'px';
+        overlay.style.width = displaySize + 'px';
+        overlay.style.height = displaySize + 'px';
         overlay.style.backgroundImage = `url(${appState.qrImage})`;
         overlay.style.backgroundSize = 'contain';
         overlay.style.backgroundRepeat = 'no-repeat';
         overlay.style.backgroundPosition = 'center';
         overlay.style.border = '2px solid #ff4757';
         overlay.style.cursor = 'pointer';
+        overlay.style.zIndex = '10';
         overlay.title = 'Clique para remover o QR Code';
         
         // Adiciona evento de clique para remover
@@ -306,7 +362,7 @@ function drawQrOverlays() {
             removeQrFromPage(appState.currentPage, index);
         });
         
-        pdfCanvas.appendChild(overlay);
+        imageContainer.appendChild(overlay);
     });
 }
 
@@ -479,8 +535,16 @@ async function savePdf() {
 }
 
 async function saveBatchZip() {
-    if (appState.batchPdfs.length === 0 || appState.batchQrs.length === 0) {
-        alert('Carregue PDFs e QR Codes em lote primeiro!');
+    if (appState.batchPdfs.length === 0 || !appState.qrImage) {
+        alert('Carregue os PDFs e um QR Code primeiro!');
+        return;
+    }
+
+    // Pega a posição do QR da página atual (que é a primeira)
+    const qrPosition = appState.qrPositions[appState.currentPage] && appState.qrPositions[appState.currentPage][0];
+    
+    if (!qrPosition) {
+        alert('Posicione o QR Code no primeiro diploma antes de salvar em lote.');
         return;
     }
     
@@ -489,23 +553,21 @@ async function saveBatchZip() {
     try {
         const formData = new FormData();
         
+        // Adiciona todos os PDFs
         appState.batchPdfs.forEach(file => {
             formData.append('pdfs', file);
         });
         
-        // Se temos QRs extraídos, usa eles; senão usa os arquivos carregados
-        if (appState.extractedQrs.length > 0) {
-            // Para QRs extraídos, precisamos converter de base64 para File
-            for (const qr of appState.extractedQrs) {
-                const blob = await base64ToBlob(qr.image);
-                const file = new File([blob], qr.filename, { type: 'image/png' });
-                formData.append('qrs', file);
-            }
-        } else {
-            appState.batchQrs.forEach(file => {
-                formData.append('qrs', file);
-            });
-        }
+        // Adiciona o QR Code (como Blob)
+        const qrBlob = await base64ToBlob(appState.qrImage);
+        formData.append('qr', qrBlob, 'qr_code.png');
+        
+        // Adiciona a posição do QR
+        formData.append('qr_position', JSON.stringify({
+            x: qrPosition.x,
+            y: qrPosition.y,
+            size: qrPosition.size
+        }));
         
         const response = await fetch(`${API_BASE}/batch-process`, {
             method: 'POST',
@@ -514,25 +576,18 @@ async function saveBatchZip() {
         
         const result = await response.json();
         
-        if (result.success) {
-            // Cria ZIP com os PDFs processados
-            const zip = new JSZip();
-            
-            result.processed_pdfs.forEach(pdf => {
-                const base64Data = pdf.pdf_base64.split(',')[1];
-                zip.file(pdf.filename, base64Data, { base64: true });
-            });
-            
-            const zipBlob = await zip.generateAsync({ type: 'blob' });
-            downloadBlob(zipBlob, 'pdfs_processados.zip');
-            
+        if (result.success && result.processed_pdfs.length > 0) {
+            saveZip(result.processed_pdfs, 'diplomas_com_qr.zip');
             log(`${result.total_processed} PDFs processados e salvos em ZIP!`);
+        } else if (result.success) {
+            log('Nenhum PDF foi processado. Verifique os logs no servidor.');
+            alert('Processamento concluído, mas nenhum PDF foi salvo. Verifique os arquivos.');
         } else {
-            throw new Error(result.error);
+            throw new Error(result.error || 'Erro desconhecido no servidor.');
         }
     } catch (error) {
         log(`Erro no processamento em lote: ${error.message}`);
-        alert('Erro no processamento em lote: ' + error.message);
+        alert(`Erro no processamento em lote: ${error.message}`);
     } finally {
         hideLoading();
     }
@@ -714,10 +769,6 @@ function downloadBlob(blob, filename) {
     URL.revokeObjectURL(url);
 }
 
-// Adiciona JSZip para criação de arquivos ZIP
-const script = document.createElement('script');
-script.src = 'https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js';
-document.head.appendChild(script);
 
 // Funções adicionais
 async function processInBatch() {
@@ -796,3 +847,45 @@ function removeAllQrsFromPage() {
     }
 }
 
+// Função para alterar modo de visualização
+function changeViewMode() {
+    const selectedMode = document.querySelector('input[name="viewMode"]:checked').value;
+    appState.viewMode = selectedMode;
+    
+    const pdfCanvas = document.getElementById('pdfCanvas');
+    const pdfImage = pdfCanvas.querySelector('.pdf-image');
+    
+    if (pdfImage) {
+        // Remove classes antigas
+        pdfImage.classList.remove('fit-screen', 'real-size');
+        pdfCanvas.classList.remove('real-size');
+        
+        // Aplica nova classe baseada no modo
+        if (selectedMode === 'fit') {
+            pdfImage.classList.add('fit-screen');
+            log('Modo de visualização: Ajustar à tela');
+        } else {
+            pdfImage.classList.add('real-size');
+            pdfCanvas.classList.add('real-size');
+            log('Modo de visualização: Tamanho real (100%)');
+        }
+        
+        // Redesenha os overlays após mudança de modo
+        setTimeout(() => {
+            drawQrOverlays();
+        }, 100);
+    }
+}
+
+// Função para obter as dimensões reais do PDF
+function getRealPdfDimensions() {
+    if (!appState.pages || !appState.pages[appState.currentPage]) {
+        return null;
+    }
+    
+    const page = appState.pages[appState.currentPage];
+    return {
+        width: page.width || 595,  // Largura padrão A4 em pontos
+        height: page.height || 842 // Altura padrão A4 em pontos
+    };
+}

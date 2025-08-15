@@ -206,11 +206,16 @@ def upload_pdf():
             img_data = pix.tobytes("png")
             img_base64 = base64.b64encode(img_data).decode('utf-8')
             
+            # Obtém as dimensões reais da página em pontos
+            page_rect = page.rect
+            
             pages.append({
                 'page_num': page_num,
                 'image': f"data:image/png;base64,{img_base64}",
-                'width': pix.width,
-                'height': pix.height
+                'width': page_rect.width,    # Largura real em pontos
+                'height': page_rect.height,  # Altura real em pontos
+                'display_width': pix.width,  # Largura da imagem renderizada
+                'display_height': pix.height # Altura da imagem renderizada
             })
         
         doc.close()
@@ -342,15 +347,26 @@ def insert_qr():
             
             if page_num < len(doc):
                 page = doc[page_num]
-                
-                # Converte coordenadas da tela para coordenadas do PDF
                 page_rect = page.rect
-                scale_x = page_rect.width / position['canvas_width']
-                scale_y = page_rect.height / position['canvas_height']
                 
-                pdf_x = x * scale_x
-                pdf_y = y * scale_y
-                pdf_size = size * min(scale_x, scale_y)
+                # Se as coordenadas já são reais (novo sistema), usa diretamente
+                if 'real_width' in position and 'real_height' in position:
+                    # Coordenadas já são reais, usa diretamente
+                    pdf_x = x
+                    pdf_y = y
+                    pdf_size = size
+                else:
+                    # Sistema antigo - converte coordenadas da tela para coordenadas do PDF
+                    scale_x = page_rect.width / position['canvas_width']
+                    scale_y = page_rect.height / position['canvas_height']
+                    
+                    pdf_x = x * scale_x
+                    pdf_y = y * scale_y
+                    pdf_size = size * min(scale_x, scale_y)
+                
+                # Garante que o QR fique dentro dos limites da página
+                pdf_x = max(0, min(pdf_x, page_rect.width - pdf_size))
+                pdf_y = max(0, min(pdf_y, page_rect.height - pdf_size))
                 
                 # Redimensiona QR
                 qr_resized = qr_image.resize((int(pdf_size), int(pdf_size)), Image.Resampling.LANCZOS)
@@ -382,174 +398,96 @@ def insert_qr():
 
 @pdf_qr_bp.route('/batch-process', methods=['POST'])
 def batch_process():
-    """Endpoint para processamento em lote"""
+    """Endpoint para processamento em lote com posição unificada"""
     try:
-        if 'pdfs' not in request.files or 'qrs' not in request.files:
+        if 'pdfs' not in request.files or 'qr' not in request.files:
             return jsonify({'error': 'Arquivos PDF e QR são necessários'}), 400
         
+        if 'qr_position' not in request.form:
+            return jsonify({'error': 'Posição do QR Code é necessária'}), 400
+
         pdf_files = request.files.getlist('pdfs')
-        qr_files = request.files.getlist('qrs')
+        qr_file = request.files['qr']
+        qr_position_str = request.form['qr_position']
+        
+        # Desserializa a posição do QR
+        import json
+        qr_position = json.loads(qr_position_str)
         
         processing_log = []
-        print("Iniciando processamento em lote...")
+        print("Iniciando processamento em lote com posição unificada...")
         processing_log.append("Iniciando processamento em lote...")
-        
-        # Cria um dicionário de QRs por nome (com múltiplas variações para matching)
-        qr_dict = {}
-        for qr_file in qr_files:
-            if qr_file.filename:
-                qr_name_original = os.path.splitext(qr_file.filename)[0]
-                qr_image = Image.open(qr_file.stream)
-                
-                # Adiciona com nome original
-                qr_dict[qr_name_original] = qr_image
-                
-                # Adiciona com nome limpo
-                qr_name_limpo = limpar_nome_arquivo(qr_name_original)
-                if qr_name_limpo != qr_name_original:
-                    qr_dict[qr_name_limpo] = qr_image
-                
-                # Adiciona versões normalizadas para matching
-                qr_normalizado, qr_sem_espacos = normalizar_para_matching(qr_name_original)
-                qr_dict[qr_normalizado] = qr_image
-                if qr_sem_espacos != qr_normalizado:
-                    qr_dict[qr_sem_espacos] = qr_image
-                
-                print(f"QR carregado: '{qr_name_original}' com variações: '{qr_name_limpo}', '{qr_normalizado}', '{qr_sem_espacos}'")
-                processing_log.append(f"QR carregado: {qr_name_original}")
-        
-        print(f"Total de QRs carregados: {len(set(qr_dict.keys()))}")
-        processing_log.append(f"Total de QRs únicos: {len(set(qr_dict.keys()))}")
+
+        # Carrega a imagem do QR
+        qr_image = Image.open(qr_file.stream)
         
         processed_pdfs = []
         
         for pdf_file in pdf_files:
-            if pdf_file.filename == '':
+            if not pdf_file.filename:
                 continue
             
-            print(f"Processando PDF: {pdf_file.filename}")
-            processing_log.append(f"Processando PDF: {pdf_file.filename}")
+            original_filename = secure_filename(pdf_file.filename)
+            print(f"Processando PDF: {original_filename}")
+            processing_log.append(f"Processando PDF: {original_filename}")
             
             pdf_bytes = pdf_file.read()
-            nome_aluno = extrair_nome_do_pdf(pdf_bytes)
             
-            if not nome_aluno:
-                msg = f"Nome não encontrado em {pdf_file.filename}"
-                print(msg)
-                processing_log.append(msg)
-                continue
-            
-            print(f"Nome extraído: {nome_aluno}")
-            processing_log.append(f"Nome extraído: {nome_aluno}")
-            
-            # Tenta encontrar QR correspondente (várias estratégias)
-            qr_image = None
-            qr_match_key = None
-            
-            # Normaliza o nome do aluno para matching
-            nome_normalizado, nome_sem_espacos = normalizar_para_matching(nome_aluno)
-            print(f"Nome para matching: '{nome_aluno}' -> '{nome_normalizado}' -> '{nome_sem_espacos}'")
-            
-            # 1. Tentativa exata
-            if nome_aluno in qr_dict:
-                qr_image = qr_dict[nome_aluno]
-                qr_match_key = nome_aluno
-                print(f"Match exato encontrado: {nome_aluno}")
-            
-            # 2. Tentativa com normalização (ignora acentos e case)
-            elif not qr_image:
-                for qr_name in qr_dict.keys():
-                    qr_normalizado, qr_sem_espacos = normalizar_para_matching(qr_name)
-                    if nome_normalizado == qr_normalizado:
-                        qr_image = qr_dict[qr_name]
-                        qr_match_key = qr_name
-                        print(f"Match normalizado: '{nome_aluno}' -> '{qr_name}'")
-                        break
-            
-            # 3. Tentativa sem espaços (ignora espaços e underscores)
-            elif not qr_image:
-                for qr_name in qr_dict.keys():
-                    qr_normalizado, qr_sem_espacos = normalizar_para_matching(qr_name)
-                    if nome_sem_espacos == qr_sem_espacos and len(nome_sem_espacos) > 3:
-                        qr_image = qr_dict[qr_name]
-                        qr_match_key = qr_name
-                        print(f"Match sem espaços: '{nome_aluno}' -> '{qr_name}'")
-                        break
-            
-            # 4. Tentativa parcial (nome contém ou é contido)
-            elif not qr_image:
-                for qr_name in qr_dict.keys():
-                    qr_normalizado, qr_sem_espacos = normalizar_para_matching(qr_name)
-                    if (len(nome_normalizado) > 5 and len(qr_normalizado) > 5 and 
-                        (nome_normalizado in qr_normalizado or qr_normalizado in nome_normalizado)):
-                        qr_image = qr_dict[qr_name]
-                        qr_match_key = qr_name
-                        print(f"Match parcial: '{nome_aluno}' -> '{qr_name}'")
-                        break
-            
-            # 5. Tentativa por palavras individuais
-            elif not qr_image:
-                palavras_nome = nome_normalizado.split()
-                if len(palavras_nome) >= 2:
-                    for qr_name in qr_dict.keys():
-                        qr_normalizado, _ = normalizar_para_matching(qr_name)
-                        palavras_qr = qr_normalizado.split()
-                        
-                        # Verifica se pelo menos 2 palavras coincidem
-                        matches = sum(1 for palavra in palavras_nome if palavra in palavras_qr)
-                        if matches >= 2:
-                            qr_image = qr_dict[qr_name]
-                            qr_match_key = qr_name
-                            print(f"Match por palavras ({matches} palavras): '{nome_aluno}' -> '{qr_name}'")
-                            break
-            
-            if not qr_image:
-                msg = f"QR não encontrado para {nome_aluno}"
-                print(msg)
-                processing_log.append(msg)
-                continue
-            
-            processing_log.append(f"QR encontrado: {qr_match_key}")
-            
-            # Processa o PDF
-            doc = fitz.open(stream=pdf_bytes, filetype="pdf")
-            
-            # Insere QR na primeira página (canto inferior direito)
-            if len(doc) > 0:
-                page = doc[0]
-                page_rect = page.rect
-                qr_size = min(page_rect.width, page_rect.height) * 0.15  # 15% do menor lado
+            try:
+                doc = fitz.open(stream=pdf_bytes, filetype="pdf")
                 
-                x = page_rect.width - qr_size - 20
-                y = page_rect.height - qr_size - 20
+                # Insere QR na primeira página usando a posição fornecida
+                if len(doc) > 0:
+                    page = doc[0]
+                    
+                    # Pega os dados da posição
+                    x = qr_position['x']
+                    y = qr_position['y']
+                    size = qr_position['size']
+                    
+                    # Garante que o QR fique dentro dos limites da página
+                    page_rect = page.rect
+                    pdf_x = max(0, min(x, page_rect.width - size))
+                    pdf_y = max(0, min(y, page_rect.height - size))
+                    
+                    # Redimensiona QR
+                    qr_resized = qr_image.resize((int(size), int(size)), Image.Resampling.LANCZOS)
+                    
+                    # Converte para bytes
+                    qr_bytes_io = io.BytesIO()
+                    qr_resized.save(qr_bytes_io, format='PNG')
+                    qr_bytes_io.seek(0)
+                    
+                    # Insere no PDF
+                    rect = fitz.Rect(pdf_x, pdf_y, pdf_x + size, pdf_y + size)
+                    page.insert_image(rect, stream=qr_bytes_io.getvalue())
+                    
+                    print(f"QR inserido em {original_filename}")
+                    processing_log.append(f"QR inserido com sucesso em {original_filename}")
+
+                # Salva PDF processado
+                output_buffer = io.BytesIO()
+                doc.save(output_buffer)
+                doc.close()
                 
-                qr_resized = qr_image.resize((int(qr_size), int(qr_size)), Image.Resampling.LANCZOS)
-                qr_bytes = io.BytesIO()
-                qr_resized.save(qr_bytes, format='PNG')
-                qr_bytes.seek(0)
+                output_buffer.seek(0)
+                pdf_base64 = base64.b64encode(output_buffer.getvalue()).decode('utf-8')
                 
-                rect = fitz.Rect(x, y, x + qr_size, y + qr_size)
-                page.insert_image(rect, stream=qr_bytes.getvalue())
+                # Gera novo nome de arquivo
+                base_name, ext = os.path.splitext(original_filename)
+                new_filename = f"{base_name}_com_qr{ext}"
                 
-                print(f"QR inserido em {nome_aluno}")
-                processing_log.append(f"QR inserido com sucesso")
-            
-            # Salva PDF processado
-            output_buffer = io.BytesIO()
-            doc.save(output_buffer)
-            doc.close()
-            
-            output_buffer.seek(0)
-            pdf_base64 = base64.b64encode(output_buffer.getvalue()).decode('utf-8')
-            
-            processed_pdfs.append({
-                'filename': f"{nome_aluno}_com_qr.pdf",
-                'pdf_base64': f"data:application/pdf;base64,{pdf_base64}",
-                'original_name': nome_aluno,
-                'qr_matched': qr_match_key
-            })
-        
-        result_msg = f"Processamento concluído: {len(processed_pdfs)} PDFs processados"
+                processed_pdfs.append({
+                    'filename': new_filename,
+                    'pdf_base64': f"data:application/pdf;base64,{pdf_base64}"
+                })
+
+            except Exception as e:
+                error_msg = f"Falha ao processar {original_filename}: {str(e)}"
+                print(error_msg)
+                processing_log.append(error_msg)
+
+        result_msg = f"Processamento concluído: {len(processed_pdfs)} de {len(pdf_files)} PDFs processados"
         print(result_msg)
         processing_log.append(result_msg)
         
@@ -684,4 +622,3 @@ def save_all_pages():
         
     except Exception as e:
         return jsonify({'error': f'Erro ao salvar todas as páginas: {str(e)}'}), 500
-
