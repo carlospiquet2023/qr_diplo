@@ -71,8 +71,24 @@ function handleCanvasClick(e) {
     const minSide = Math.min(canvasWidth, canvasHeight);
     const qrPixelSize = (qrSize / 100) * minSide;
     
-    const qrX = x - qrPixelSize / 2;
-    const qrY = y - qrPixelSize / 2;
+        // Ajusta para garantir que o QR fique dentro da área do diploma (imagem renderizada)
+        // Supondo que a imagem é centralizada e tem margens laterais
+        const diplomaMarginX = canvasWidth * 0.07; // 7% de margem lateral
+        const diplomaMarginY = canvasHeight * 0.07; // 7% de margem vertical
+        const diplomaWidth = canvasWidth - 2 * diplomaMarginX;
+        const diplomaHeight = canvasHeight - 2 * diplomaMarginY;
+
+        // Limites válidos para o centro do QR
+        const minX = diplomaMarginX + qrPixelSize / 2;
+        const maxX = diplomaMarginX + diplomaWidth - qrPixelSize / 2;
+        const minY = diplomaMarginY + qrPixelSize / 2;
+        const maxY = diplomaMarginY + diplomaHeight - qrPixelSize / 2;
+
+        // Ajusta a posição para ficar dentro do diploma
+        const qrCenterX = Math.max(minX, Math.min(x, maxX));
+        const qrCenterY = Math.max(minY, Math.min(y, maxY));
+        const qrX = qrCenterX - qrPixelSize / 2;
+        const qrY = qrCenterY - qrPixelSize / 2;
     
     // Remove QR anterior desta página
     if (!appState.qrPositions[appState.currentPage]) {
@@ -92,7 +108,7 @@ function handleCanvasClick(e) {
     
     drawQrOverlays();
     updateSaveButtons();
-    log(`QR Code posicionado na página ${appState.currentPage + 1}`);
+    log(`QR Code posicionado na página ${appState.currentPage + 1} em (${Math.round(qrX)}, ${Math.round(qrY)})`);
 }
 
 async function loadPdfs(files) {
@@ -160,11 +176,33 @@ async function loadQrs(files) {
         const reader = new FileReader();
         reader.onload = function(e) {
             appState.qrImage = e.target.result;
+            updateQrPreview();
             updateStatus();
             updateSaveButtons();
             log(`QR Code carregado: ${file.name}`);
         };
         reader.readAsDataURL(file);
+    }
+}
+
+function updateQrPreview() {
+    const qrPreview = document.getElementById('qrPreview');
+    const qrPreviewImage = document.getElementById('qrPreviewImage');
+    
+    if (appState.qrImage) {
+        qrPreviewImage.style.backgroundImage = `url(${appState.qrImage})`;
+        qrPreview.style.display = 'block';
+    } else {
+        qrPreview.style.display = 'none';
+    }
+}
+
+function removeAllQrsFromPage() {
+    if (appState.qrPositions[appState.currentPage]) {
+        appState.qrPositions[appState.currentPage] = [];
+        drawQrOverlays();
+        updateSaveButtons();
+        log(`Todos os QR Codes removidos da página ${appState.currentPage + 1}`);
     }
 }
 
@@ -242,22 +280,43 @@ function drawQrOverlays() {
     // Remove overlays existentes
     document.querySelectorAll('.qr-overlay').forEach(el => el.remove());
     
-    if (!appState.qrPositions[appState.currentPage]) return;
+    if (!appState.qrPositions[appState.currentPage] || !appState.qrImage) return;
     
     const pdfCanvas = document.getElementById('pdfCanvas');
     const pageQrs = appState.qrPositions[appState.currentPage];
     
-    pageQrs.forEach(qr => {
+    pageQrs.forEach((qr, index) => {
         const overlay = document.createElement('div');
         overlay.className = 'qr-overlay';
-        overlay.style.left = qr.x + 'px';
-        overlay.style.top = qr.y + 'px';
+        overlay.style.left = Math.max(0, qr.x) + 'px';
+        overlay.style.top = Math.max(0, qr.y) + 'px';
         overlay.style.width = qr.size + 'px';
         overlay.style.height = qr.size + 'px';
-        overlay.textContent = 'QR';
+        overlay.style.backgroundImage = `url(${appState.qrImage})`;
+        overlay.style.backgroundSize = 'contain';
+        overlay.style.backgroundRepeat = 'no-repeat';
+        overlay.style.backgroundPosition = 'center';
+        overlay.style.border = '2px solid #ff4757';
+        overlay.style.cursor = 'pointer';
+        overlay.title = 'Clique para remover o QR Code';
+        
+        // Adiciona evento de clique para remover
+        overlay.addEventListener('click', function(e) {
+            e.stopPropagation();
+            removeQrFromPage(appState.currentPage, index);
+        });
         
         pdfCanvas.appendChild(overlay);
     });
+}
+
+function removeQrFromPage(pageIndex, qrIndex) {
+    if (appState.qrPositions[pageIndex]) {
+        appState.qrPositions[pageIndex].splice(qrIndex, 1);
+        drawQrOverlays();
+        updateSaveButtons();
+        log(`QR Code removido da página ${pageIndex + 1}`);
+    }
 }
 
 function previousPage() {
@@ -338,13 +397,21 @@ function updateStatus() {
 function updateSaveButtons() {
     const savePdfBtn = document.getElementById('savePdfBtn');
     const saveBatchBtn = document.getElementById('saveBatchBtn');
+    const saveCurrentPageBtn = document.getElementById('saveCurrentPage');
+    const saveAllPagesBtn = document.getElementById('saveAllPages');
+    const processInBatchBtn = document.getElementById('processInBatch');
     
     const hasQrPositioned = appState.qrPositions.some(positions => positions.length > 0);
     const canSave = appState.currentPdf && appState.qrImage && hasQrPositioned;
     const canSaveBatch = appState.batchPdfs.length > 0 && appState.batchQrs.length > 0;
+    const hasCurrentPageQr = appState.qrPositions[appState.currentPage] && appState.qrPositions[appState.currentPage].length > 0;
+    const canProcessBatch = appState.currentPdf && appState.batchQrs && appState.batchQrs.length > 0;
     
-    savePdfBtn.disabled = !canSave;
-    saveBatchBtn.disabled = !canSaveBatch;
+    if (savePdfBtn) savePdfBtn.disabled = !canSave;
+    if (saveBatchBtn) saveBatchBtn.disabled = !canSaveBatch;
+    if (saveCurrentPageBtn) saveCurrentPageBtn.disabled = !hasCurrentPageQr;
+    if (saveAllPagesBtn) saveAllPagesBtn.disabled = !canSave;
+    if (processInBatchBtn) processInBatchBtn.disabled = !canProcessBatch;
 }
 
 function removeQrFromPage() {
@@ -471,6 +538,83 @@ async function saveBatchZip() {
     }
 }
 
+async function saveCurrentPage() {
+    if (!appState.currentPdf || !appState.qrImage) {
+        alert('Carregue um PDF e QR Code primeiro.');
+        return;
+    }
+    
+    const pageQrs = appState.qrPositions[appState.currentPage] || [];
+    if (pageQrs.length === 0) {
+        alert('Adicione pelo menos um QR Code à página atual.');
+        return;
+    }
+    
+    try {
+        log(`Salvando página ${appState.currentPage + 1} com ${pageQrs.length} QR Code(s)...`);
+        
+        const formData = new FormData();
+        formData.append('pdf', appState.currentPdf);
+        formData.append('qr', await fetch(appState.qrImage).then(r => r.blob()));
+        formData.append('pageNumber', appState.currentPage.toString());
+        formData.append('positions', JSON.stringify(pageQrs));
+        
+        const response = await fetch('/api/save-page', {
+            method: 'POST',
+            body: formData
+        });
+        
+        if (response.ok) {
+            const blob = await response.blob();
+            downloadBlob(blob, `diploma_pagina_${appState.currentPage + 1}.pdf`);
+            log(`Página ${appState.currentPage + 1} salva com sucesso!`);
+        } else {
+            const error = await response.text();
+            log(`Erro ao salvar página: ${error}`, 'error');
+        }
+    } catch (error) {
+        log(`Erro durante o salvamento: ${error.message}`, 'error');
+    }
+}
+
+async function saveAllPages() {
+    if (!appState.currentPdf || !appState.qrImage) {
+        alert('Carregue um PDF e QR Code primeiro.');
+        return;
+    }
+    
+    const totalQrs = Object.values(appState.qrPositions).reduce((sum, page) => sum + page.length, 0);
+    if (totalQrs === 0) {
+        alert('Adicione pelo menos um QR Code antes de salvar.');
+        return;
+    }
+    
+    try {
+        log(`Salvando todas as páginas com ${totalQrs} QR Code(s)...`);
+        
+        const formData = new FormData();
+        formData.append('pdf', appState.currentPdf);
+        formData.append('qr', await fetch(appState.qrImage).then(r => r.blob()));
+        formData.append('allPositions', JSON.stringify(appState.qrPositions));
+        
+        const response = await fetch('/api/save-all-pages', {
+            method: 'POST',
+            body: formData
+        });
+        
+        if (response.ok) {
+            const blob = await response.blob();
+            downloadBlob(blob, 'diploma_completo_com_qrs.pdf');
+            log('Todas as páginas salvas com sucesso!');
+        } else {
+            const error = await response.text();
+            log(`Erro ao salvar todas as páginas: ${error}`, 'error');
+        }
+    } catch (error) {
+        log(`Erro durante o salvamento: ${error.message}`, 'error');
+    }
+}
+
 function resetSystem() {
     appState = {
         currentPdf: null,
@@ -574,4 +718,81 @@ function downloadBlob(blob, filename) {
 const script = document.createElement('script');
 script.src = 'https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js';
 document.head.appendChild(script);
+
+// Funções adicionais
+async function processInBatch() {
+    if (!appState.pdfUrl || !appState.batchQrs || appState.batchQrs.length === 0) {
+        alert('Carregue um PDF e QR Codes antes de processar em lote.');
+        return;
+    }
+
+    const progress = document.getElementById('batchProgress');
+    if (progress) {
+        const progressBar = progress.querySelector('.progress');
+        progress.style.display = 'block';
+    }
+
+    try {
+        log('Iniciando processamento em lote...');
+        
+        const formData = new FormData();
+        formData.append('pdf', await fetch(appState.pdfUrl).then(r => r.blob()));
+        
+        for (let i = 0; i < appState.batchQrs.length; i++) {
+            formData.append('qrs', appState.batchQrs[i]);
+        }
+
+        const response = await fetch('/api/batch-process', {
+            method: 'POST',
+            body: formData
+        });
+
+        if (response.ok) {
+            const blob = await response.blob();
+            downloadBlob(blob, 'diploma_com_qrs_lote.pdf');
+            log('Processamento em lote concluído com sucesso!');
+        } else {
+            const error = await response.text();
+            log(`Erro no processamento em lote: ${error}`, 'error');
+        }
+    } catch (error) {
+        log(`Erro durante o processamento em lote: ${error.message}`, 'error');
+    } finally {
+        if (progress) {
+            progress.style.display = 'none';
+        }
+    }
+}
+
+function downloadBlob(blob, filename) {
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+}
+
+function updateQrPreview() {
+    const qrPreview = document.getElementById('qrPreview');
+    const qrPreviewImage = document.getElementById('qrPreviewImage');
+    
+    if (appState.qrImage && qrPreview && qrPreviewImage) {
+        qrPreviewImage.style.backgroundImage = `url(${appState.qrImage})`;
+        qrPreview.style.display = 'block';
+    } else if (qrPreview) {
+        qrPreview.style.display = 'none';
+    }
+}
+
+function removeAllQrsFromPage() {
+    if (appState.qrPositions[appState.currentPage]) {
+        appState.qrPositions[appState.currentPage] = [];
+        drawQrOverlays();
+        updateSaveButtons();
+        log(`Todos os QR Codes removidos da página ${appState.currentPage + 1}`);
+    }
+}
 

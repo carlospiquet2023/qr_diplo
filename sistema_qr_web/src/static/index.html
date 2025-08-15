@@ -276,14 +276,18 @@
         .qr-overlay {
             position: absolute;
             border: 2px solid #ff4757;
-            background: rgba(255, 71, 87, 0.1);
-            pointer-events: none;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            color: #ff4757;
-            font-weight: bold;
-            font-size: 12px;
+            background: rgba(255, 255, 255, 0.9);
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+            border-radius: 4px;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            z-index: 100;
+        }
+
+        .qr-overlay:hover {
+            border-color: #ff3742;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+            transform: scale(1.05);
         }
 
         .upload-area {
@@ -403,6 +407,21 @@
                 </button>
             </div>
 
+            <div class="button-group">
+                <button class="btn btn-success" id="saveCurrentPage" onclick="saveCurrentPage()" disabled>
+                    💾 Salvar Página Atual
+                </button>
+                <button class="btn btn-success" id="saveAllPages" onclick="saveAllPages()" disabled>
+                    📁 Salvar Todas as Páginas
+                </button>
+                <button class="btn btn-warning" id="processInBatch" onclick="processInBatch()" disabled>
+                    ⚡ Processar em Lote
+                </button>
+                <button class="btn btn-danger" id="removeAllQrs" onclick="removeAllQrsFromPage()">
+                    🗑 Remover Todos QRs da Página
+                </button>
+            </div>
+
             <div class="status-bar">
                 <div class="status-item" id="pdfStatus">
                     Nenhum PDF carregado
@@ -444,13 +463,23 @@
                 <div class="sidebar-section">
                     <h4>Controles QR</h4>
                     <div class="qr-controls">
+                        <div id="qrPreview" style="display: none; margin-bottom: 15px;">
+                            <label>QR Code Atual:</label>
+                            <div id="qrPreviewImage" style="width: 80px; height: 80px; border: 2px solid #ddd; border-radius: 8px; background-size: contain; background-repeat: no-repeat; background-position: center; margin: 5px 0;"></div>
+                        </div>
+                        
                         <label>Tamanho QR (% do menor lado):</label>
                         <div class="slider-container">
                             <input type="range" class="slider" id="qrSizeSlider" min="10" max="100" value="20">
                             <span id="qrSizeLabel">20%</span>
                         </div>
-                        <button class="btn btn-danger" onclick="removeQrFromPage()">
-                            Remover QR da Página
+                        
+                        <div style="margin: 15px 0; padding: 10px; background: #e3f2fd; border-radius: 8px; font-size: 13px;">
+                            <strong>💡 Dica:</strong> Clique no diploma para posicionar o QR Code. Clique no QR posicionado para removê-lo.
+                        </div>
+                        
+                        <button class="btn btn-danger" onclick="removeAllQrsFromPage()" style="width: 100%;">
+                            🗑️ Remover Todos QRs da Página
                         </button>
                     </div>
                 </div>
@@ -475,6 +504,15 @@
                 </div>
             </div>
         </div>
+    </div>
+
+    <!-- Barra de progresso para processamento em lote -->
+    <div id="batchProgress" style="display: none; position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); background: white; padding: 20px; border-radius: 10px; box-shadow: 0 4px 20px rgba(0,0,0,0.3); z-index: 1000;">
+        <h4>Processando em Lote...</h4>
+        <div style="width: 300px; height: 20px; background: #f0f0f0; border-radius: 10px; overflow: hidden;">
+            <div class="progress" style="height: 100%; background: linear-gradient(90deg, #4facfe 0%, #00f2fe 100%); width: 0%; transition: width 0.3s ease;"></div>
+        </div>
+        <p style="margin: 10px 0 0 0; text-align: center; color: #666;">Aguarde...</p>
     </div>
 
     <!-- Inputs ocultos -->

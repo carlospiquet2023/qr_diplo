@@ -564,5 +564,124 @@ def batch_process():
         error_msg = f'Erro no processamento em lote: {str(e)}'
         print(error_msg)
         return jsonify({'error': error_msg}), 500
-        return jsonify({'error': f'Erro no processamento em lote: {str(e)}'}), 500
+
+@pdf_qr_bp.route('/save-page', methods=['POST'])
+def save_page():
+    """Salva uma página específica do PDF com QR Code inserido"""
+    try:
+        pdf_file = request.files.get('pdf')
+        qr_file = request.files.get('qr')
+        page_number = int(request.form.get('pageNumber', 0))
+        positions_str = request.form.get('positions', '[]')
+        
+        if not pdf_file or not qr_file:
+            return jsonify({'error': 'PDF e QR Code são obrigatórios'}), 400
+        
+        positions = eval(positions_str) if positions_str else []
+        
+        # Abre o PDF
+        pdf_document = fitz.open(stream=pdf_file.read(), filetype="pdf")
+        
+        if page_number >= len(pdf_document):
+            return jsonify({'error': 'Número da página inválido'}), 400
+        
+        # Carrega a imagem do QR
+        qr_image = Image.open(qr_file).convert('RGBA')
+        
+        # Processa apenas a página especificada
+        page = pdf_document[page_number]
+        
+        for pos in positions:
+            x, y = pos['x'], pos['y']
+            size = pos.get('size', 50)
+            
+            # Redimensiona o QR
+            qr_resized = qr_image.resize((size, size), Image.Resampling.LANCZOS)
+            
+            # Converte para bytes
+            qr_bytes = io.BytesIO()
+            qr_resized.save(qr_bytes, format='PNG')
+            qr_bytes = qr_bytes.getvalue()
+            
+            # Insere o QR na página
+            rect = fitz.Rect(x, y, x + size, y + size)
+            page.insert_image(rect, stream=qr_bytes)
+        
+        # Salva em memória
+        output = io.BytesIO()
+        pdf_document.save(output)
+        pdf_document.close()
+        output.seek(0)
+        
+        return send_file(
+            output,
+            mimetype='application/pdf',
+            as_attachment=True,
+            download_name=f'diploma_pagina_{page_number + 1}.pdf'
+        )
+        
+    except Exception as e:
+        return jsonify({'error': f'Erro ao salvar página: {str(e)}'}), 500
+
+@pdf_qr_bp.route('/save-all-pages', methods=['POST'])
+def save_all_pages():
+    """Salva todas as páginas do PDF com QR Codes inseridos"""
+    try:
+        pdf_file = request.files.get('pdf')
+        qr_file = request.files.get('qr')
+        all_positions_str = request.form.get('allPositions', '{}')
+        
+        if not pdf_file or not qr_file:
+            return jsonify({'error': 'PDF e QR Code são obrigatórios'}), 400
+        
+        all_positions = eval(all_positions_str) if all_positions_str else {}
+        
+        # Abre o PDF
+        pdf_document = fitz.open(stream=pdf_file.read(), filetype="pdf")
+        
+        # Carrega a imagem do QR
+        qr_image = Image.open(qr_file).convert('RGBA')
+        
+        # Processa todas as páginas com QRs
+        for page_num, positions in all_positions.items():
+            if not positions:  # Pula páginas sem QRs
+                continue
+                
+            page_index = int(page_num)
+            if page_index >= len(pdf_document):
+                continue
+                
+            page = pdf_document[page_index]
+            
+            for pos in positions:
+                x, y = pos['x'], pos['y']
+                size = pos.get('size', 50)
+                
+                # Redimensiona o QR
+                qr_resized = qr_image.resize((size, size), Image.Resampling.LANCZOS)
+                
+                # Converte para bytes
+                qr_bytes = io.BytesIO()
+                qr_resized.save(qr_bytes, format='PNG')
+                qr_bytes = qr_bytes.getvalue()
+                
+                # Insere o QR na página
+                rect = fitz.Rect(x, y, x + size, y + size)
+                page.insert_image(rect, stream=qr_bytes)
+        
+        # Salva em memória
+        output = io.BytesIO()
+        pdf_document.save(output)
+        pdf_document.close()
+        output.seek(0)
+        
+        return send_file(
+            output,
+            mimetype='application/pdf',
+            as_attachment=True,
+            download_name='diploma_completo_com_qrs.pdf'
+        )
+        
+    except Exception as e:
+        return jsonify({'error': f'Erro ao salvar todas as páginas: {str(e)}'}), 500
 
