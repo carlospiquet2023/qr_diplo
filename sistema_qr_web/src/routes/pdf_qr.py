@@ -15,12 +15,49 @@ from werkzeug.utils import secure_filename
 pdf_qr_bp = Blueprint('pdf_qr', __name__)
 
 def limpar_nome_arquivo(nome):
-    """Remove acentos e caracteres especiais do nome do arquivo"""
-    nome = unicodedata.normalize('NFD', nome)
-    nome = ''.join(char for char in nome if unicodedata.category(char) != 'Mn')
-    nome = re.sub(r'[^\w\s-]', '', nome)
-    nome = re.sub(r'[-\s]+', '_', nome)
-    return nome.strip('_')
+    """Remove acentos e caracteres especiais do nome do arquivo para matching"""
+    if not nome:
+        return ""
+    
+    # Remove quebras de linha e espaços extras
+    nome = re.sub(r'\s+', ' ', nome.strip())
+    
+    # Normaliza acentos (NFD = separa caracteres e acentos)
+    nome_normalizado = unicodedata.normalize('NFD', nome)
+    
+    # Remove apenas os acentos, mantendo letras
+    nome_sem_acento = ''.join(char for char in nome_normalizado if unicodedata.category(char) != 'Mn')
+    
+    # Remove caracteres especiais, mas mantém letras, números e espaços
+    nome_limpo = re.sub(r'[^\w\s]', '', nome_sem_acento)
+    
+    # Substitui múltiplos espaços por um único espaço
+    nome_limpo = re.sub(r'\s+', ' ', nome_limpo)
+    
+    # Remove .pdf se existir
+    if nome_limpo.lower().endswith('.pdf'):
+        nome_limpo = nome_limpo[:-4]
+    
+    return nome_limpo.strip()
+
+def normalizar_para_matching(nome):
+    """Normaliza nome especificamente para matching (mais agressivo)"""
+    if not nome:
+        return ""
+    
+    # Aplica limpeza básica
+    nome_limpo = limpar_nome_arquivo(nome)
+    
+    # Remove underscores e substitui por espaços
+    nome_limpo = nome_limpo.replace('_', ' ')
+    
+    # Converte para minúsculas para matching case-insensitive
+    nome_limpo = nome_limpo.lower()
+    
+    # Remove espaços para matching mais flexível
+    nome_sem_espacos = nome_limpo.replace(' ', '')
+    
+    return nome_limpo, nome_sem_espacos
 
 def extrair_nome_do_pdf(pdf_bytes):
     """Extrai o nome do aluno do PDF"""
@@ -30,32 +67,46 @@ def extrair_nome_do_pdf(pdf_bytes):
         text = page.get_text()
         doc.close()
         
-        # Primeiro tenta o padrão "Nome do aluno:"
-        match = re.search(r'Nome do aluno:\s*(.+)', text, re.IGNORECASE)
-        if match:
-            nome = match.group(1).strip()
-            nome = limpar_nome_arquivo(nome)
-            if nome.lower().endswith('.pdf'):
-                nome = nome[:-4]
-            return nome
+        print(f"Texto extraído do PDF:\n{text}")
         
-        # Para diplomas, procura por padrões de nomes próprios
-        # Busca por sequências de 2+ palavras que começam com maiúscula
+        # Padrões específicos para diplomas/certificados
+        patterns = [
+            r'Aluno:\s*(.+)',           # "Aluno: Nome"
+            r'Nome do aluno:\s*(.+)',   # "Nome do aluno: Nome"
+            r'Aluno\s*:\s*(.+)',        # "Aluno : Nome" (com espaços)
+            r'Nome:\s*(.+)',            # "Nome: Nome"
+            r'Formando:\s*(.+)',        # "Formando: Nome"
+            r'Graduando:\s*(.+)',       # "Graduando: Nome"
+        ]
+        
+        for pattern in patterns:
+            match = re.search(pattern, text, re.IGNORECASE)
+            if match:
+                nome = match.group(1).strip()
+                # Remove quebras de linha e espaços extras
+                nome = re.sub(r'\s+', ' ', nome)
+                # Remove texto adicional após o nome (como curso, etc.)
+                nome = re.split(r'\n|Curso:|curso:', nome)[0].strip()
+                nome_limpo = limpar_nome_arquivo(nome)
+                print(f"Nome extraído por padrão '{pattern}': '{nome}' -> '{nome_limpo}'")
+                return nome_limpo
+        
+        # Se não encontrou com padrões, busca por nomes próprios
         lines = text.split('\n')
         for line in lines:
             line = line.strip()
             # Ignora linhas muito curtas ou muito longas
-            if len(line) < 5 or len(line) > 50:
+            if len(line) < 5 or len(line) > 80:
                 continue
             
             # Procura por padrão de nome (palavras com primeira letra maiúscula)
             words = line.split()
-            if len(words) >= 2:
+            if len(words) >= 2 and len(words) <= 6:  # Nome típico tem 2-6 palavras
                 # Verifica se todas as palavras começam com maiúscula (exceto conectores)
-                conectores = ['de', 'da', 'do', 'dos', 'das', 'e']
+                conectores = ['de', 'da', 'do', 'dos', 'das', 'e', 'del', 'van', 'von']
                 nome_valido = True
                 for word in words:
-                    if word.lower() not in conectores and not word[0].isupper():
+                    if word.lower() not in conectores and (len(word) < 2 or not word[0].isupper()):
                         nome_valido = False
                         break
                 
@@ -66,14 +117,14 @@ def extrair_nome_do_pdf(pdf_bytes):
                         palavras_ignorar = ['diploma', 'certificado', 'curso', 'universidade', 
                                           'faculdade', 'instituto', 'graduação', 'bacharelado',
                                           'licenciatura', 'tecnólogo', 'especialização', 'mestrado',
-                                          'doutorado', 'pós-graduação', 'conclusão', 'formatura']
+                                          'doutorado', 'pós-graduação', 'conclusão', 'formatura',
+                                          'deliberação', 'credenciamento', 'parecer', 'renovação',
+                                          'data', 'impressão', 'página', 'documento']
                         
                         if not any(palavra in line.lower() for palavra in palavras_ignorar):
-                            nome = limpar_nome_arquivo(line)
-                            if nome.lower().endswith('.pdf'):
-                                nome = nome[:-4]
-                            print(f"Nome extraído do diploma: {nome}")
-                            return nome
+                            nome_limpo = limpar_nome_arquivo(line)
+                            print(f"Nome extraído por detecção automática: '{line}' -> '{nome_limpo}'")
+                            return nome_limpo
         
         print("Nenhum nome encontrado no PDF")
         return None
@@ -343,16 +394,29 @@ def batch_process():
         print("Iniciando processamento em lote...")
         processing_log.append("Iniciando processamento em lote...")
         
-        # Cria um dicionário de QRs por nome (com normalização)
+        # Cria um dicionário de QRs por nome (com múltiplas variações para matching)
         qr_dict = {}
         for qr_file in qr_files:
             if qr_file.filename:
-                qr_name = os.path.splitext(qr_file.filename)[0]
-                qr_name_normalizado = limpar_nome_arquivo(qr_name)
-                qr_dict[qr_name_normalizado] = Image.open(qr_file.stream)
-                qr_dict[qr_name] = qr_dict[qr_name_normalizado]  # Mantém também o original
-                print(f"QR carregado: {qr_name} -> {qr_name_normalizado}")
-                processing_log.append(f"QR carregado: {qr_name}")
+                qr_name_original = os.path.splitext(qr_file.filename)[0]
+                qr_image = Image.open(qr_file.stream)
+                
+                # Adiciona com nome original
+                qr_dict[qr_name_original] = qr_image
+                
+                # Adiciona com nome limpo
+                qr_name_limpo = limpar_nome_arquivo(qr_name_original)
+                if qr_name_limpo != qr_name_original:
+                    qr_dict[qr_name_limpo] = qr_image
+                
+                # Adiciona versões normalizadas para matching
+                qr_normalizado, qr_sem_espacos = normalizar_para_matching(qr_name_original)
+                qr_dict[qr_normalizado] = qr_image
+                if qr_sem_espacos != qr_normalizado:
+                    qr_dict[qr_sem_espacos] = qr_image
+                
+                print(f"QR carregado: '{qr_name_original}' com variações: '{qr_name_limpo}', '{qr_normalizado}', '{qr_sem_espacos}'")
+                processing_log.append(f"QR carregado: {qr_name_original}")
         
         print(f"Total de QRs carregados: {len(set(qr_dict.keys()))}")
         processing_log.append(f"Total de QRs únicos: {len(set(qr_dict.keys()))}")
@@ -382,30 +446,62 @@ def batch_process():
             qr_image = None
             qr_match_key = None
             
+            # Normaliza o nome do aluno para matching
+            nome_normalizado, nome_sem_espacos = normalizar_para_matching(nome_aluno)
+            print(f"Nome para matching: '{nome_aluno}' -> '{nome_normalizado}' -> '{nome_sem_espacos}'")
+            
             # 1. Tentativa exata
             if nome_aluno in qr_dict:
                 qr_image = qr_dict[nome_aluno]
                 qr_match_key = nome_aluno
                 print(f"Match exato encontrado: {nome_aluno}")
             
-            # 2. Tentativa com normalização
-            elif nome_aluno.lower() in [k.lower() for k in qr_dict.keys()]:
-                for k in qr_dict.keys():
-                    if k.lower() == nome_aluno.lower():
-                        qr_image = qr_dict[k]
-                        qr_match_key = k
-                        print(f"Match por normalização: {nome_aluno} -> {k}")
-                        break
-            
-            # 3. Tentativa parcial (nome contém ou é contido)
-            else:
+            # 2. Tentativa com normalização (ignora acentos e case)
+            elif not qr_image:
                 for qr_name in qr_dict.keys():
-                    if (nome_aluno.lower() in qr_name.lower() or 
-                        qr_name.lower() in nome_aluno.lower()):
+                    qr_normalizado, qr_sem_espacos = normalizar_para_matching(qr_name)
+                    if nome_normalizado == qr_normalizado:
                         qr_image = qr_dict[qr_name]
                         qr_match_key = qr_name
-                        print(f"Match parcial: {nome_aluno} -> {qr_name}")
+                        print(f"Match normalizado: '{nome_aluno}' -> '{qr_name}'")
                         break
+            
+            # 3. Tentativa sem espaços (ignora espaços e underscores)
+            elif not qr_image:
+                for qr_name in qr_dict.keys():
+                    qr_normalizado, qr_sem_espacos = normalizar_para_matching(qr_name)
+                    if nome_sem_espacos == qr_sem_espacos and len(nome_sem_espacos) > 3:
+                        qr_image = qr_dict[qr_name]
+                        qr_match_key = qr_name
+                        print(f"Match sem espaços: '{nome_aluno}' -> '{qr_name}'")
+                        break
+            
+            # 4. Tentativa parcial (nome contém ou é contido)
+            elif not qr_image:
+                for qr_name in qr_dict.keys():
+                    qr_normalizado, qr_sem_espacos = normalizar_para_matching(qr_name)
+                    if (len(nome_normalizado) > 5 and len(qr_normalizado) > 5 and 
+                        (nome_normalizado in qr_normalizado or qr_normalizado in nome_normalizado)):
+                        qr_image = qr_dict[qr_name]
+                        qr_match_key = qr_name
+                        print(f"Match parcial: '{nome_aluno}' -> '{qr_name}'")
+                        break
+            
+            # 5. Tentativa por palavras individuais
+            elif not qr_image:
+                palavras_nome = nome_normalizado.split()
+                if len(palavras_nome) >= 2:
+                    for qr_name in qr_dict.keys():
+                        qr_normalizado, _ = normalizar_para_matching(qr_name)
+                        palavras_qr = qr_normalizado.split()
+                        
+                        # Verifica se pelo menos 2 palavras coincidem
+                        matches = sum(1 for palavra in palavras_nome if palavra in palavras_qr)
+                        if matches >= 2:
+                            qr_image = qr_dict[qr_name]
+                            qr_match_key = qr_name
+                            print(f"Match por palavras ({matches} palavras): '{nome_aluno}' -> '{qr_name}'")
+                            break
             
             if not qr_image:
                 msg = f"QR não encontrado para {nome_aluno}"
