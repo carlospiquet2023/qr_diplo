@@ -534,59 +534,71 @@ async function savePdf() {
     }
 }
 
-async function saveBatchZip() {
-    if (appState.batchPdfs.length === 0 || !appState.qrImage) {
-        alert('Carregue os PDFs e um QR Code primeiro!');
+async function processInBatch() {
+    if (appState.batchPdfs.length === 0 || appState.batchQrs.length === 0) {
+        alert('Carregue os PDFs e os QR Codes para o processamento em lote.');
         return;
     }
 
-    // Pega a posição do QR da página atual (que é a primeira)
     const qrPosition = appState.qrPositions[appState.currentPage] && appState.qrPositions[appState.currentPage][0];
-    
     if (!qrPosition) {
-        alert('Posicione o QR Code no primeiro diploma antes de salvar em lote.');
+        alert('Posicione o QR Code no primeiro diploma para definir a posição para todos.');
         return;
     }
-    
-    showLoading('Processando lote...');
-    
+
+    showLoading('Processando em lote...');
+    log('Iniciando processamento em lote com múltiplos QR Codes...');
+
     try {
         const formData = new FormData();
-        
+
         // Adiciona todos os PDFs
         appState.batchPdfs.forEach(file => {
             formData.append('pdfs', file);
         });
-        
-        // Adiciona o QR Code (como Blob)
-        const qrBlob = await base64ToBlob(appState.qrImage);
-        formData.append('qr', qrBlob, 'qr_code.png');
-        
+
+        // Adiciona todos os QR Codes
+        for (const qr of appState.batchQrs) {
+            if (qr.dataUrl) {
+                // QR extraído (base64)
+                const blob = await base64ToBlob(qr.dataUrl);
+                formData.append('qrs', blob, qr.name || 'qr.png');
+            } else {
+                // QR carregado (File object)
+                formData.append('qrs', qr);
+            }
+        }
+
         // Adiciona a posição do QR
         formData.append('qr_position', JSON.stringify({
             x: qrPosition.x,
             y: qrPosition.y,
             size: qrPosition.size
         }));
-        
+
         const response = await fetch(`${API_BASE}/batch-process`, {
             method: 'POST',
             body: formData
         });
-        
+
         const result = await response.json();
-        
-        if (result.success && result.processed_pdfs.length > 0) {
-            saveZip(result.processed_pdfs, 'diplomas_com_qr.zip');
-            log(`${result.total_processed} PDFs processados e salvos em ZIP!`);
+
+        // Log detalhado do servidor
+        if (result.processing_log) {
+            result.processing_log.forEach(msg => log(msg));
+        }
+
+        if (result.success && result.processed_pdfs && result.processed_pdfs.length > 0) {
+            log(`Processamento concluído. ${result.total_processed} PDFs foram processados.`);
+            await saveZip(result.processed_pdfs, 'diplomas_com_qr.zip');
         } else if (result.success) {
-            log('Nenhum PDF foi processado. Verifique os logs no servidor.');
-            alert('Processamento concluído, mas nenhum PDF foi salvo. Verifique os arquivos.');
+            log('Processamento concluído, mas nenhum PDF foi retornado. Verifique os logs.');
+            alert('Nenhum PDF foi processado com sucesso. Verifique a correspondência de nomes e os logs.');
         } else {
-            throw new Error(result.error || 'Erro desconhecido no servidor.');
+            throw new Error(result.error || 'Ocorreu um erro desconhecido no servidor.');
         }
     } catch (error) {
-        log(`Erro no processamento em lote: ${error.message}`);
+        log(`Erro fatal no processamento em lote: ${error.message}`);
         alert(`Erro no processamento em lote: ${error.message}`);
     } finally {
         hideLoading();
@@ -771,60 +783,6 @@ function downloadBlob(blob, filename) {
 
 
 // Funções adicionais
-async function processInBatch() {
-    if (!appState.pdfUrl || !appState.batchQrs || appState.batchQrs.length === 0) {
-        alert('Carregue um PDF e QR Codes antes de processar em lote.');
-        return;
-    }
-
-    const progress = document.getElementById('batchProgress');
-    if (progress) {
-        const progressBar = progress.querySelector('.progress');
-        progress.style.display = 'block';
-    }
-
-    try {
-        log('Iniciando processamento em lote...');
-        
-        const formData = new FormData();
-        formData.append('pdf', await fetch(appState.pdfUrl).then(r => r.blob()));
-        
-        for (let i = 0; i < appState.batchQrs.length; i++) {
-            formData.append('qrs', appState.batchQrs[i]);
-        }
-
-        const response = await fetch('/api/batch-process', {
-            method: 'POST',
-            body: formData
-        });
-
-        if (response.ok) {
-            const blob = await response.blob();
-            downloadBlob(blob, 'diploma_com_qrs_lote.pdf');
-            log('Processamento em lote concluído com sucesso!');
-        } else {
-            const error = await response.text();
-            log(`Erro no processamento em lote: ${error}`, 'error');
-        }
-    } catch (error) {
-        log(`Erro durante o processamento em lote: ${error.message}`, 'error');
-    } finally {
-        if (progress) {
-            progress.style.display = 'none';
-        }
-    }
-}
-
-function downloadBlob(blob, filename) {
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = filename;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
-}
 
 function updateQrPreview() {
     const qrPreview = document.getElementById('qrPreview');

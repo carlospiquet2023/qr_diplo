@@ -71,12 +71,12 @@ def extrair_nome_do_pdf(pdf_bytes):
         
         # Padrões específicos para diplomas/certificados
         patterns = [
-            r'Aluno:\s*(.+)',           # "Aluno: Nome"
-            r'Nome do aluno:\s*(.+)',   # "Nome do aluno: Nome"
-            r'Aluno\s*:\s*(.+)',        # "Aluno : Nome" (com espaços)
-            r'Nome:\s*(.+)',            # "Nome: Nome"
-            r'Formando:\s*(.+)',        # "Formando: Nome"
-            r'Graduando:\s*(.+)',       # "Graduando: Nome"
+            r'Aluno:\s*([A-ZÀ-Ú][a-zà-ú]+(?:\s[A-ZÀ-Ú][a-zà-ú]+)*)',
+            r'Nome do aluno:\s*([A-ZÀ-Ú][a-zà-ú]+(?:\s[A-ZÀ-Ú][a-zà-ú]+)*)',
+            r'Certificamos que\s*([A-ZÀ-Ú][a-zà-ú]+(?:\s[A-ZÀ-Ú][a-zà-ú]+)*)',
+            r'Nome:\s*([A-ZÀ-Ú][a-zà-ú]+(?:\s[A-ZÀ-Ú][a-zà-ú]+)*)',
+            r'Formando:\s*([A-ZÀ-Ú][a-zà-ú]+(?:\s[A-ZÀ-Ú][a-zà-ú]+)*)',
+            r'Graduando:\s*([A-ZÀ-Ú][a-zà-ú]+(?:\s[A-ZÀ-Ú][a-zà-ú]+)*)',
         ]
         
         for pattern in patterns:
@@ -86,8 +86,19 @@ def extrair_nome_do_pdf(pdf_bytes):
                 # Remove quebras de linha e espaços extras
                 nome = re.sub(r'\s+', ' ', nome)
                 # Remove texto adicional após o nome (como curso, etc.)
-                nome = re.split(r'\n|Curso:|curso:', nome)[0].strip()
-                nome_limpo = limpar_nome_arquivo(nome)
+                nome = re.split(r'\n|Curso:|curso:|Curso\s|curso\s', nome)[0].strip()
+                # Remove palavras que não fazem parte do nome
+                palavras = nome.split()
+                nome_limpo_palavras = []
+                for palavra in palavras:
+                    palavra_lower = palavra.lower()
+                    if palavra_lower not in ['curso', 'de', 'graduação', 'pós', 'especialização']:
+                        nome_limpo_palavras.append(palavra)
+                    else:
+                        break  # Para quando encontrar uma palavra que não é nome
+                
+                nome_final = ' '.join(nome_limpo_palavras)
+                nome_limpo = limpar_nome_arquivo(nome_final)
                 print(f"Nome extraído por padrão '{pattern}': '{nome}' -> '{nome_limpo}'")
                 return nome_limpo
         
@@ -398,74 +409,103 @@ def insert_qr():
 
 @pdf_qr_bp.route('/batch-process', methods=['POST'])
 def batch_process():
-    """Endpoint para processamento em lote com posição unificada"""
+    """Processa PDFs em lote, associando QR Codes individuais de cada aluno pelo nome."""
     try:
-        if 'pdfs' not in request.files or 'qr' not in request.files:
-            return jsonify({'error': 'Arquivos PDF e QR são necessários'}), 400
+        if 'pdfs' not in request.files or 'qrs' not in request.files:
+            return jsonify({'error': 'Diplomas (PDFs) e QRs extraídos são necessários'}), 400
         
         if 'qr_position' not in request.form:
-            return jsonify({'error': 'Posição do QR Code é necessária'}), 400
+            return jsonify({'error': 'A posição do QR Code é necessária'}), 400
 
-        pdf_files = request.files.getlist('pdfs')
-        qr_file = request.files['qr']
+        diploma_files = request.files.getlist('pdfs')  # PDFs dos diplomas
+        qr_files = request.files.getlist('qrs')        # PNGs dos QRs extraídos
         qr_position_str = request.form['qr_position']
         
-        # Desserializa a posição do QR
         import json
         qr_position = json.loads(qr_position_str)
         
         processing_log = []
-        print("Iniciando processamento em lote com posição unificada...")
-        processing_log.append("Iniciando processamento em lote...")
+        log_msg = "Iniciando processamento em lote com posição unificada..."
+        print(log_msg)
+        processing_log.append(log_msg)
 
-        # Carrega a imagem do QR
-        qr_image = Image.open(qr_file.stream)
-        
+        # 1. Mapear QRs por nome (baseado no nome do arquivo PNG)
+        qr_map = {}
+        for qr_file in qr_files:
+            # Nome do arquivo QR (ex: "Alicia Araujo.png")
+            qr_filename = qr_file.filename
+            if qr_filename.lower().endswith('.png'):
+                # Remove extensão e normaliza
+                nome_qr = os.path.splitext(qr_filename)[0]
+                nome_normalizado, nome_sem_espacos = normalizar_para_matching(nome_qr)
+                
+                # Lê os bytes da imagem
+                qr_bytes = qr_file.read()
+                
+                # Mapeia por ambas as versões do nome
+                qr_map[nome_normalizado] = qr_bytes
+                qr_map[nome_sem_espacos] = qr_bytes
+                
+                log_msg = f"QR '{qr_filename}' mapeado para '{nome_qr}' (normalizado: '{nome_normalizado}')"
+                print(log_msg)
+                processing_log.append(log_msg)
+
+        # 2. Processar cada diploma
         processed_pdfs = []
+        success_count = 0
         
-        for pdf_file in pdf_files:
-            if not pdf_file.filename:
-                continue
+        for diploma_file in diploma_files:
+            original_filename = secure_filename(diploma_file.filename)
+            log_msg = f"Processando PDF: {original_filename}"
+            print(log_msg)
+            processing_log.append(log_msg)
             
-            original_filename = secure_filename(pdf_file.filename)
-            print(f"Processando PDF: {original_filename}")
-            processing_log.append(f"Processando PDF: {original_filename}")
-            
-            pdf_bytes = pdf_file.read()
+            diploma_bytes = diploma_file.read()
             
             try:
-                doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+                # a. Extrair nome do aluno do diploma
+                nome_aluno_diploma = extrair_nome_do_pdf(diploma_bytes)
+                if not nome_aluno_diploma:
+                    # Se não conseguir extrair do PDF, usa o nome do arquivo
+                    nome_arquivo = os.path.splitext(original_filename)[0]
+                    nome_aluno_diploma = limpar_nome_arquivo(nome_arquivo)
+                    log_msg = f"Nome extraído do arquivo: '{nome_aluno_diploma}'"
+                else:
+                    log_msg = f"Nome extraído do PDF: '{nome_aluno_diploma}'"
                 
-                # Insere QR na primeira página usando a posição fornecida
+                print(log_msg)
+                processing_log.append(log_msg)
+                
+                nome_normalizado_diploma, nome_sem_espacos_diploma = normalizar_para_matching(nome_aluno_diploma)
+
+                # b. Encontrar o QR Code correspondente
+                matched_qr_bytes = qr_map.get(nome_normalizado_diploma) or qr_map.get(nome_sem_espacos_diploma)
+
+                if not matched_qr_bytes:
+                    log_msg = f"ERRO: QR Code para '{nome_aluno_diploma}' não encontrado no mapa"
+                    print(log_msg)
+                    processing_log.append(log_msg)
+                    continue
+                
+                # c. Inserir o QR Code no diploma na posição unificada
+                doc = fitz.open(stream=diploma_bytes, filetype="pdf")
                 if len(doc) > 0:
-                    page = doc[0]
-                    
-                    # Pega os dados da posição
-                    x = qr_position['x']
-                    y = qr_position['y']
-                    size = qr_position['size']
+                    page = doc[0]  # Sempre insere na primeira página
+                    x, y, size = qr_position['x'], qr_position['y'], qr_position['size']
+                    page_rect = page.rect
                     
                     # Garante que o QR fique dentro dos limites da página
-                    page_rect = page.rect
                     pdf_x = max(0, min(x, page_rect.width - size))
                     pdf_y = max(0, min(y, page_rect.height - size))
                     
-                    # Redimensiona QR
-                    qr_resized = qr_image.resize((int(size), int(size)), Image.Resampling.LANCZOS)
-                    
-                    # Converte para bytes
-                    qr_bytes_io = io.BytesIO()
-                    qr_resized.save(qr_bytes_io, format='PNG')
-                    qr_bytes_io.seek(0)
-                    
-                    # Insere no PDF
                     rect = fitz.Rect(pdf_x, pdf_y, pdf_x + size, pdf_y + size)
-                    page.insert_image(rect, stream=qr_bytes_io.getvalue())
+                    page.insert_image(rect, stream=matched_qr_bytes)
                     
-                    print(f"QR inserido em {original_filename}")
-                    processing_log.append(f"QR inserido com sucesso em {original_filename}")
+                    log_msg = f"QR inserido em {original_filename}"
+                    print(log_msg)
+                    processing_log.append(log_msg)
 
-                # Salva PDF processado
+                # d. Salvar o PDF processado
                 output_buffer = io.BytesIO()
                 doc.save(output_buffer)
                 doc.close()
@@ -473,7 +513,6 @@ def batch_process():
                 output_buffer.seek(0)
                 pdf_base64 = base64.b64encode(output_buffer.getvalue()).decode('utf-8')
                 
-                # Gera novo nome de arquivo
                 base_name, ext = os.path.splitext(original_filename)
                 new_filename = f"{base_name}_com_qr{ext}"
                 
@@ -481,25 +520,27 @@ def batch_process():
                     'filename': new_filename,
                     'pdf_base64': f"data:application/pdf;base64,{pdf_base64}"
                 })
+                
+                success_count += 1
 
             except Exception as e:
-                error_msg = f"Falha ao processar {original_filename}: {str(e)}"
+                error_msg = f"Erro ao processar '{original_filename}': {str(e)}"
                 print(error_msg)
                 processing_log.append(error_msg)
 
-        result_msg = f"Processamento concluído: {len(processed_pdfs)} de {len(pdf_files)} PDFs processados"
+        result_msg = f"Processamento concluído: {success_count} de {len(diploma_files)} PDFs processados"
         print(result_msg)
         processing_log.append(result_msg)
         
         return jsonify({
             'success': True,
             'processed_pdfs': processed_pdfs,
-            'total_processed': len(processed_pdfs),
+            'total_processed': success_count,
             'processing_log': processing_log
         })
         
     except Exception as e:
-        error_msg = f'Erro no processamento em lote: {str(e)}'
+        error_msg = f'Erro geral no processamento em lote: {str(e)}'
         print(error_msg)
         return jsonify({'error': error_msg}), 500
 
